@@ -1,0 +1,200 @@
+#!/usr/bin/env python
+
+""" #+begin_org
+* Panel::  [[file:./py3/panels/bisos.pypiserver/_nodeBase_/fullUsagePanel-en.org]]
+* Overview and Relevant Pointers
+pypiserver-sbom.pcs: software bill of materials of the pypiserver hereWeb capability ---
+pypiserver, a private Python package index, and pypi-browser, its web UI.
+Debian packages neither. Both are Python programs, installed at pinned versions by func-bearing
+pseudo-packages: pypiserver into the shared virtenv of adopted software components
+(/bisos/venv/py3/asc, as bisos.airflow is), refusing to change any package another capability put
+there; pypi-browser into an isolated venv of its own (/bisos/venv/py3/isolated/pypiBrowser), because
+it does not work with asc's Starlette 1.x (reason in pypiserverInfo.browserVenv), hash-pinned.
+Uploads need the login admin / pypiserver (the rawBisos convention; insecure by design).
+This is the server only. The usage side (twine) is pypiserverUsage-sbom.pcs, which this sbom does
+not pull in; pypiserverCbs-sbom.pcs, the sbom of pypiserver-cbs.pcs, runs both.
+#+end_org """
+
+from bisos import b
+from bisos.b import cs
+from bisos.b import b_io
+
+from bisos.sbom import pkgsSeed  # pkgsSeed.plantWithWhich("seedSbom.cs")
+from bisos.banna import sysAccts
+from bisos.pypiserver.pypiserverInfo import (
+    pypiserverInfo, pipSetupScript, browserVenvSetupScript, htpasswdScript,
+    envFileContent, browserEnvFileContent,
+)
+
+ap = pkgsSeed.aptPkg
+
+# The facts of the installation --- account, venv, pins, paths, env files, ports, login ---
+# come from bisos.pypiserver.pypiserverInfo, the one source the units, pypiserverAdmin.cs,
+# dns and vhost read too.
+#
+# Each func-bearing pseudo-package below is registered in aptPkgsList, so sbom_csu's
+# aptPkgs_update() calls it instead of apt-get install. Its gate can never be true --- so each
+# runs on *every* sbom_fullUpdate and must stay idempotent. Ordering is load-bearing.
+#
+# The Python packages are NOT in pipPkgsList: bisos.sbom's pip step ignores versions and skips
+# anything already installed (see AI-Outputs.org), so a pin would never be applied or bumped.
+
+
+def _bash(script: str) -> b.op.Outcome:
+    outcome = b.subProc.WOpW(invedBy=None, log=1).bash(script)
+    if outcome.isProblematic():
+        b_io.eh.badOutcome(outcome)
+    return outcome
+
+
+def pypiserverAcctSetup():
+    """The pypiserver system account and the dirs it must own. Not an apt package."""
+    i = pypiserverInfo
+    return _bash(f"""
+set -e
+{sysAccts.useraddScript(i.acctName)}
+
+sudo mkdir -p {i.packagesDir} {i.browserCacheDir} {i.confDir}
+sudo chown -R {i.acctName}:{i.acctName} {i.dataDir}
+sudo chmod 750 {i.dataDir}
+""")
+
+
+def pypiserverPipSetup():
+    """pypiserver, waitress and passlib at their pins, into the shared venv. Not an apt package.
+
+    Refused, with nothing installed, if the venv is missing or if the pins would change a package
+    they do not own.
+    """
+    venv = pypiserverInfo.virtenv
+    return _bash(f"""
+set -e
+if [ ! -x {venv}/bin/pip ] ; then
+    echo "{venv} does not exist: run pyVenv-asc-sbom.pcs -i sbom_fullUpdate first" >&2
+    exit 1
+fi
+""" + pipSetupScript())
+
+
+def pypiBrowserVenvSetup():
+    """pypi-browser and its whole resolved set, hash-pinned, into its isolated venv. Not an apt package."""
+    return _bash(browserVenvSetupScript())
+
+
+def pypiserverConfSetup():
+    """The htpasswd file and the two EnvironmentFiles. Not an apt package.
+
+    Each is written only when absent, so hand overrides survive re-runs; pypiserverAdmin.cs -i
+    driftCheck reports how they differ from the generators.
+    """
+    i = pypiserverInfo
+    return _bash(f"""
+set -e
+{htpasswdScript()}
+if [ ! -f {i.envFile} ] ; then
+    sudo tee {i.envFile} >/dev/null <<'PYPI_ENV_EOF'
+{envFileContent()}PYPI_ENV_EOF
+fi
+if [ ! -f {i.browserEnvFile} ] ; then
+    sudo tee {i.browserEnvFile} >/dev/null <<'BROWSER_ENV_EOF'
+{browserEnvFileContent()}BROWSER_ENV_EOF
+fi
+sudo chown root:{i.acctName} {i.envFile} {i.browserEnvFile} {i.confDir}
+sudo chmod 640 {i.envFile} {i.browserEnvFile}
+sudo chmod 750 {i.confDir}
+""")
+
+
+aptPkgsList = [
+    ap("pypiserverAcctSetup", func=pypiserverAcctSetup),
+    ap("pypiserverPipSetup", func=pypiserverPipSetup),
+    ap("pypiBrowserVenvSetup", func=pypiBrowserVenvSetup),
+    ap("pypiserverConfSetup", func=pypiserverConfSetup),   # after pip: the htpasswd hash needs passlib
+]
+
+pkgsSeed.setup(
+    aptPkgsList=aptPkgsList,
+)
+
+
+####+BEGIN: b:py3:cs:cmnd/classHead :cmndName "readme" :extent "verify" :comment "Describe" :parsMand "" :parsOpt "" :argsMin 0 :argsMax 0 :pyInv ""
+""" #+begin_org
+*  _[[elisp:(blee:menu-sel:outline:popupMenu)][±]]_ _[[elisp:(blee:menu-sel:navigation:popupMenu)][Ξ]]_ [[elisp:(outline-show-branches+toggle)][|=]] [[elisp:(bx:orgm:indirectBufOther)][|>]] *[[elisp:(blee:ppmm:org-mode-toggle)][|N]]*  CmndSvc-   [[elisp:(outline-show-subtree+toggle)][||]] <<readme>>  *Describe*  =verify= ro=cli   [[elisp:(org-cycle)][| ]]
+#+end_org """
+class readme(cs.Cmnd):
+    cmndParamsMandatory = [ ]
+    cmndParamsOptional = [ ]
+    cmndArgsLen = {'Min': 0, 'Max': 0,}
+
+    @cs.track(fnLoc=True, fnEntry=True, fnExit=True)
+    def cmnd(self,
+             rtInv: cs.RtInvoker,
+             cmndOutcome: b.op.Outcome,
+    ) -> b.op.Outcome:
+        """Describe"""
+        failed = b_io.eh.badOutcome
+        callParamsDict = {}
+        if self.invocationValidate(rtInv, cmndOutcome, callParamsDict, None).isProblematic():
+            return failed(cmndOutcome)
+####+END:
+        i = pypiserverInfo
+        descriptionStr = f"""\
+** Scope: pypiserver {i.pypiserverVersion}, a private Python package index, and pypi-browser
+   {i.pypiBrowserVersion}, its web UI, both at {i.baseUrl}
+   Upload login: {i.adminUser} / {i.adminPassword}  (rawBisos convention; insecure by design)
+
+** What this installs:
+  1) pypiserverAcctSetup: the {i.acctName} system account, with uid/gid
+     {sysAccts.sysAcctOf(i.acctName).uid} from bisos.banna.sysAccts; {i.packagesDir} and {i.browserCacheDir}.
+  2) pypiserverPipSetup: into {i.virtenv} (shared with bisos.airflow), exactly:
+       {" ".join(i.pipPins)}
+     Refused if the pins would change a package another capability installed there.
+  3) pypiBrowserVenvSetup: pypi-browser-webapp {i.pypiBrowserVersion} and its {len(i.browserReqs)} resolved packages,
+     each hash-pinned, into the isolated venv {i.browserVenv} ({i.browserReqsArch} only).
+     Isolated because pypi-browser fails on asc's Starlette 1.x.
+  4) pypiserverConfSetup (each written only when absent): {i.htpasswdFile},
+     {i.envFile}, {i.browserEnvFile}.
+
+** Listeners (all loopback; ports from bisos.banna), one fqdn through nginx:
+     pypiserver    {i.localUrl}            {i.baseUrl}/simple/, /packages/, uploads (POST /)
+     pypi-browser  http://{i.browserAddr}  {i.baseUrl}/  (everything else)
+
+** What this does NOT do:
+  - It does not start anything. The pypiserver and pypi-browser units are declared by
+    pypiserver-cbs.pcs, which also runs this sbom (through pypiserverCbs-sbom.pcs).
+  - It installs nothing for uploading: that is pypiserverUsage-sbom.pcs (twine).
+  - It does not create {i.virtenv}: pyVenv-asc-sbom.pcs does.
+
+       pypiserver-sbom.pcs -i sbom_fullUpdate\
+"""
+        print(descriptionStr)
+
+        return cmndOutcome.set(
+            opError=b.op.OpError.Success,
+            opResults=None,
+        )
+
+
+def examples_csu() -> b.op.Outcome:
+    """Common Usage Examples for this Command-Service Unit"""
+
+    cmnd = cs.examples.cmndEnter
+    literal = cs.examples.execInsert
+    i = pypiserverInfo
+
+    cmndOutcome = b.op.Outcome()
+
+    cs.examples.menuChapter('*pypiserver and pypi-browser -- sbom Examples*')
+    cmnd('readme', comment=" # An overview short description")
+
+    cs.examples.menuChapter('*Installation*')
+    literal("pypiserver-sbom.pcs -i sbom_fullUpdate")
+
+    cs.examples.menuChapter('*Verify Installation*')
+    literal(f"{i.venvBin('pypi-server')} --version")
+    literal(f"{i.venvBin('pip')} show pypiserver waitress passlib | grep -E '^(Name|Version)'")
+    literal(f"{i.browserVenvBin('pip')} show pypi-browser-webapp starlette uvicorn | grep -E '^(Name|Version)'")
+    literal(f"sudo ls -l {i.confDir} {i.dataDir}")
+
+    cs.examples.menuChapter('*End-Of pypiserver and pypi-browser -- sbom Examples*')
+    return cmndOutcome

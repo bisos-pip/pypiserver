@@ -1,0 +1,99 @@
+#+title: Development Status & Continuation Handoff
+#+TAGS: me ai aiAndMe
+
+# Provenance (installed once by aiActivity.cs --- not regenerated):
+#   Date:      2026-10-16T18:44:00+00:00
+#   User:      bystar
+#   Templates: /bisos/apps/defaults/ai-templates
+#   Command:   /bisos/venv/py3/devbin/aiActivity.cs -i initiate --activity=bisos-pip
+
+####+BEGIN: b:ai:file/particulars
+* AI Working Context
+  Working Directory: /bisos/git/auth/bxRepos/bisos-pip/pypiserver
+  File: /bisos/git/auth/bxRepos/bisos-pip/pypiserver/AI-DevStatus.org
+  Activity: bisos-pip
+  Companion Docs: AI-WORKFLOW.org, AI-Activity.org, AI-DevStatus.org
+####+END:
+
+Last updated: 2026-10-16 (package created and materialized on one host).
+
+This file is a working-state handoff so development can continue on another
+machine (which has this repo but NOT the developer's =~=). It captures the
+architecture, what works, what is untested and the design decisions made so far.
+
+This file is maintained by Claude. Updates are typically triggered by the
+=/bx-status-update= slash command, after major interactions, or before a release.
+
+* Current State
+  - bisos.pypiserver packages a private Python package index --- pypiserver 2.4.2 and pypi-browser-webapp
+    0.0.12 --- as a hereWeb-collective CBS/CBM, both at http://pypiserver.here (pypi-browser at /, the index
+    at /simple/). Upload login admin / pypiserver (rawBisos convention, insecure by design). Created
+    2026-10-16, the fourth package on the cbm-package-authorship pattern and the first whose programs are
+    Python. Installed editable in bisos3. Not committed yet.
+  - Materialized on this host (Debian 13): both units active; upload, install and browse verified end to
+    end; driftCheck agrees.
+
+* Architecture
+  - py3/bisos/pypiserver/pypiserverInfo.py --- the single source of facts: the two venvs and their pins
+    (asc: pypiserver, waitress, passlib; isolated/pypiBrowser: 22 packages with sha256), paths, banna ports,
+    the login, pip/twine arguments, generators of the two EnvironmentFiles, and the install scripts
+    (pipSetupScript with the asc guard, browserVenvSetupScript, twineSetupScript, htpasswdScript).
+  - Layout: /bisos/venv/py3/asc (shared) and /bisos/venv/py3/isolated/pypiBrowser (bystar, setgid bisos,
+    created without sudo); /bisos/pipx/venvs/twine; /etc/pypiserver/htpasswd and /etc/default/{pypiserver,
+    pypi-browser} root:pypiserver 640; /var/lib/pypiserver/{packages,browser-cache} pypiserver 750.
+  - py3/bin: pypiserver-sbom.pcs (server), pypiserverUsage-sbom.pcs (twine), pypiserverCbs-sbom.pcs (both);
+    pypiserver-sysd.pcs (asc/bin/pypi-server $ARGS, waitress), pypi-browser-sysd.pcs (isolated uvicorn,
+    Wants= pypiserver); pypiserver-here-dns.pcs, pypiserver-wvd.pcs, pypiserver-assemble.cs;
+    pypiserver-cbs.pcs; cbmProc-pypiserver.spcs; pypiserverAdmin.cs (hostInfo, servicesInfo, indexInfo,
+    driftCheck, fullUpdate); quickPypiserver.cs.
+  - Ports (bisos.banna): pypiserver=24013, pypiBrowser=24014, both 127.0.0.1. pypiserver.here ->
+    127.0.22.116 -> nginx :80 -> /simple, /packages, POST / to 24013; everything else to 24014.
+  - Account pypiserver uid/gid 506.
+
+* What Works
+  Verified on this host, 2026-10-16:
+  - cbs_materialize (and again, a no-op); both units active as pypiserver 506; pypiserver on waitress.
+  - Upload: anonymous 403; twine with admin / pypiserver through nginx (POST / routed to pypiserver).
+  - pip: --index-url (this index only) and --extra-index-url (with PyPI), both with --trusted-host.
+  - pypi-browser lists a package's files at /package/<name>.
+  - driftCheck: both env files, the htpasswd user, both units, 3 asc pins, 22 isolated pins.
+  - The asc guard refuses an install that would change another capability's package (tested with a
+    Starlette downgrade); asc is pip-check clean; Airflow's units kept running.
+  - verify.sh end to end, all invariants PASS.
+
+* What Is Untested
+  - cbm_materialize at a planted CBM leaf; a second platform; any architecture but amd64; restart after
+    reboot; a version bump of either venv's pins.
+  - pypiserverUsage-sbom.pcs alone on a host without the server.
+  - Large uploads near client_max_body_size; many concurrent pip clients.
+  - pypi-browser opening files inside a large wheel or sdist (its cache, PYPI_BROWSER_* limits).
+
+* Key Design Decisions
+  - One fqdn, two programs (user, 2026-10-16, option b): pypi-browser at /, the index at /simple/. POST / is
+    the upload endpoint and GET / the browser's home page, so the vhost routes / with a map on
+    $request_method (in the http context; the map's name carries the fqdn's, to stay unique), not `if`.
+    client_max_body_size 200m (nginx's 1m default refuses uploads). pypiserver's --server-base-url would allow
+    a prefix instead, but would move the index to /pypi/simple/.
+  - Python programs go in /bisos/venv/py3/asc (user); exceptions, only for a demonstrated conflict, in
+    /bisos/venv/py3/isolated/<program>/ (user chose "isolated"), named by the program, recording why, moved
+    back when the reason is gone. pypi-browser is one: 0.0.12 fails on Starlette 1.x and asc has 1.6.0
+    (Airflow's); it declares no bound, so pip and the dry-run guard cannot see the conflict --- only running
+    it does. Upstream fix chriskuehl/pypi-browser PR #15.
+  - asc: exact pins, no hashes (a shared venv cannot require them), a dry-run guard against changing others'
+    packages. isolated: the whole resolved set with hashes, --no-deps.
+  - Pins are applied by func-bearing pseudo-packages, not pipPkgsList/pipxPkgsList: bisos.sbom ignores
+    versions there and skips installed packages (AI-Outputs.org) --- so bisos.airflow's ver= pin is not
+    applied either.
+  - pypiserver: --authenticate update (downloads and listing anonymous), --disable-fallback (no redirect to
+    pypi.org; use --extra-index-url), no --server (it rejects "waitress"; auto picks waitress when installed,
+    otherwise wsgiref, single-threaded).
+  - pip needs --trusted-host for a plain-HTTP index on a non-localhost name; carried in pypiserverInfo.
+  - htpasswd hashed by passlib with apr_md5_crypt (no bcrypt module needed).
+  - twine via pipx (a CLI), at its pin, reinstalled on a bump.
+  - Out of chain (under git): the cbm-package-authorship skill (asc/isolated rules, Python install method,
+    pitfalls) in /bisos/git/bxRepos/bisos/defaults/ai-templates/mother/_skills/; AI-Outputs.org
+    (blee-binders/evolution): bisos.sbom ignores pip/pipx versions.
+
+# Local Variables:
+# eval: (setq-local toc-org-max-depth 4)
+# End:

@@ -1,0 +1,322 @@
+#+title: bisos.pypiserver: A Private Python Package Index (pypiserver + pypi-browser) via BISOS Capability Bundles
+#+DATE: <2026-10-16 Fri>
+#+AUTHOR: Mohsen BANAN
+#+OPTIONS: toc:4
+
+#+BEGIN: b:org:pypi:readme/topControls :pkgName "pypiserver" :comment "basic"
+
+|----------------------+------------------------------------------------------------------|
+| ~Blee Panel Controls~: | [[elisp:(show-all)][Show-All]] : [[elisp:(org-shifttab)][Overview]] : [[elisp:(progn (org-shifttab) (org-content))][Content]] : [[elisp:(delete-other-windows)][(1)]] : [[elisp:(progn (save-buffer) (kill-buffer))][S&Q]] : [[elisp:(save-buffer)][Save]]  : [[elisp:(kill-buffer)][Quit]]  : [[elisp:(bury-buffer)][Bury]] |
+| ~Panel Links~:         | [[file:./py3/panels/bisos.pypiserver/_nodeBase_/fullUsagePanel-en.org][Repo Blee Panel]] --  [[file:/bisos/git/auth/bxRepos/bisos-pip/pypiserver/py3/panels/bisos.pypiserver/_nodeBase_/fullUsagePanel-en.org][Blee Panel]]                                   |
+| ~See Also~:            | [[https://pypi.org/project/bisos.pypiserver][At PYPI]] : [[https://github.com/bisos-pip/pycs][bisos.PyCS]]                                             |
+|----------------------+------------------------------------------------------------------|
+
+#+END:
+
+* Overview
+
+/bisos.pypiserver/ is a BISOS package for running a private Python package index on a BISOS host:
+[[https://github.com/pypiserver/pypiserver][pypiserver]], the index pip installs from and twine uploads
+to, and [[https://github.com/chriskuehl/pypi-browser][pypi-browser]], a web UI for browsing the packages in
+it (and the files inside them). It is a BISOS Capability Bundle (CBS/CBM) of =systemd=-planted Command
+Services.
+
+A planted pointer leaf (=cbmProc.spcs=, at =sys/cbm/collective/hereWeb/pypiserver/=) subprocess-invokes a
+Capability Bundle Specification (=pypiserver-cbs.pcs=). The CBS declares package installation (sboms), the
+two =systemd= units (=pypiserver= and =pypi-browser=), and the assembly step that makes both reachable on one
+name, =http://pypiserver.here=: pypi-browser at =/=, the index at =/simple/=.
+
+Debian packages neither. Both are Python programs, installed at exact pins: pypiserver into BISOS's shared
+venv of adopted software components (=/bisos/venv/py3/asc=), and pypi-browser into an isolated venv of its
+own, because it does not work with the Starlette version already in =asc= (see below).
+
+#+BEGIN: b:org:pypi:readme/pkgDocumentation :pkgName "pypiserver-cs" :comment "basic"
+
+# PYPI Documentation Comes Here in _description.org
+#+END:
+
+* Table of Contents     :TOC:
+- [[#overview][Overview]]
+- [[#the-bisos-pypiserver-model][The BISOS pypiserver Model]]
+- [[#wsgi-asgi-and-their-servers-why-there-are-two-processes-behind-nginx][WSGI, ASGI and Their Servers: Why There Are Two Processes Behind nginx]]
+- [[#one-name-two-programs-the-routing][One Name, Two Programs: the Routing]]
+- [[#where-the-python-goes-asc-and-isolated][Where the Python Goes: asc and isolated]]
+- [[#the-login-rawbisos-convenience-insecure-by-design][The Login: rawBisos Convenience, Insecure by Design]]
+- [[#what-gets-installed-and-where][What Gets Installed, and Where]]
+- [[#the-3-sboms-server-usage-and-the-cbss][The 3 sboms: Server, Usage, and the CBS's]]
+- [[#the-2-systemd-units][The 2 systemd Units]]
+- [[#listeners-and-ports][Listeners and Ports]]
+- [[#installation][Installation]]
+  - [[#installation-with-pip][Installation With pip]]
+  - [[#installation-with-pipx][Installation With pipx]]
+- [[#usage][Usage]]
+  - [[#materialization][Materialization]]
+  - [[#using-the-index-pip-and-twine][Using the Index: pip and twine]]
+  - [[#day-to-day-admin-pypiserveradmincs][Day-to-Day Admin: =pypiserverAdmin.cs=]]
+  - [[#direct-command-cheat-sheet-quickpypiservercs][Direct Command Cheat Sheet: =quickPypiserver.cs=]]
+- [[#key-files][Key Files]]
+- [[#part-of-bisos--bystar-internet-services-operating-system][Part of BISOS — ByStar Internet Services Operating System]]
+- [[#documentation-and-blee-panels][Documentation and Blee-Panels]]
+- [[#support][Support]]
+- [[#planned-improvements][Planned Improvements]]
+
+* The BISOS pypiserver Model
+
+=bisos.pypiserver= (=/bisos/git/bxRepos/bisos-pip/pypiserver=) packages pypiserver 2.4.2 and
+pypi-browser-webapp 0.0.12 as a hereWeb CBS/CBM, on the pattern of =bisos.kafka=, =bisos.prometheus= and
+=bisos.grafana= (the =cbm-package-authorship= skill): one module of facts (=pypiserverInfo.py=), exact pins,
+config written only when absent, a read-only =driftCheck=, a service sbom and a usage sbom joined only by
+the CBS. It is the first of these packages whose programs are Python, so it is also where the pattern's
+Python rules were set: the shared =asc= venv, its exceptions under =/bisos/venv/py3/isolated/=, and how pins
+are applied.
+
+It is for the rawBisos layer: convenient and insecure by design. Securing it is a separate layer.
+
+*As of 2026-10-16 it is materialized on one host* (Debian 13): both units active, a package uploaded with
+twine, installed back with pip and browsed in pypi-browser through =http://pypiserver.here=, =driftCheck=
+agrees.
+
+* WSGI, ASGI and Their Servers: Why There Are Two Processes Behind nginx
+
+A Python web application does not open a network socket itself. It is a function that a separate /server/
+process calls for each request; the contract between the two is a standard interface:
+
+- *WSGI* --- the older, synchronous one (a request per thread). pypiserver is a WSGI app (bottle).
+  Its server here is *waitress*, a production WSGI server.
+- *ASGI* --- the asynchronous successor. pypi-browser is an ASGI app (Starlette). Its server here is
+  *uvicorn*, the common ASGI server.
+
+nginx cannot run Python; it is the reverse proxy in front of both, as it is for every =.here= service:
+
+#+begin_example
+browser / pip / twine --> nginx :80 (pypiserver.here) --+--> waitress  127.0.0.1:24013  pypiserver   (/simple, /packages, POST /)
+                                                        +--> uvicorn   127.0.0.1:24014  pypi-browser (everything else)
+#+end_example
+
+* One Name, Two Programs: the Routing
+
+pip reads =/simple/= and =/packages/= (pypiserver). twine uploads by =POST /= (pypiserver). Everything else,
+including =GET /=, is pypi-browser. Because =/= is both the upload endpoint and the browser's home page, the
+vhost routes it by request method, with an nginx =map= rather than nginx's fragile =if=. The vhost also
+raises =client_max_body_size= to 200m: nginx's default of 1m would refuse most uploads.
+
+* Where the Python Goes: asc and isolated
+
+- *=/bisos/venv/py3/asc=* --- the shared venv of BISOS's adopted software components, where Python programs
+  go by default (bisos.airflow's are there). pypiserver, waitress and passlib are installed there at exact
+  pins. Because the venv is shared, the install first does a dry run and *refuses* if it would change the
+  version of any package these pins do not own (e.g. Airflow's Starlette). Hashes cannot be required in a
+  shared venv.
+- *=/bisos/venv/py3/isolated/<program>/=* --- the exceptions: a venv of its own for a program that has been
+  shown not to work in =asc=, named by the program. Each records why, and moves back to =asc= when the
+  reason is gone. Being private, its whole resolved set is pinned with hashes (=pip --require-hashes=).
+- *pypi-browser is such an exception* (=isolated/pypiBrowser=): pypi-browser-webapp 0.0.12, its latest
+  release (2024-06), uses Starlette's pre-1.0 =TemplateResponse= and fails on Starlette 1.x --- and =asc= has
+  Starlette 1.6.0 (Airflow's). pypi-browser does not constrain Starlette, so pip installs it without
+  complaint and every page is a 500. Its venv pins Starlette 0.52.1. The upstream fix is
+  chriskuehl/pypi-browser PR #15, unmerged.
+- *twine* (the usage side) is a CLI, so it is installed through pipx (=/bisos/pipx=), itself one venv per CLI.
+
+* The Login: rawBisos Convenience, Insecure by Design
+
+Downloading and listing need no login. Uploading needs *admin / pypiserver*: the rawBisos convention, user
+=admin=, password the service's name. It is in =/etc/pypiserver/htpasswd= (written only when absent, hashed
+with apr_md5_crypt). pypi-browser has no login. A "secure it" layer, on top, is where a real password, HTTPS
+and listening beyond loopback belong.
+
+* What Gets Installed, and Where
+
+Every fact below lives in one place, =py3/bisos/pypiserver/pypiserverInfo.py=.
+
+| What                                       | Where                                  | Owner                |
+|--------------------------------------------+----------------------------------------+----------------------|
+| The =pypiserver= account                     | uid/gid 506, from bisos.banna =sysAccts= | ---                  |
+| pypiserver 2.4.2, waitress 3.0.2, passlib 1.7.4 | =/bisos/venv/py3/asc= (shared)           | the venv's owner     |
+| pypi-browser-webapp 0.0.12 + 21 deps (Starlette 0.52.1, uvicorn 0.54.0) | =/bisos/venv/py3/isolated/pypiBrowser= | the venv's owner |
+| twine 7.0.0 (usage side)                   | =/bisos/pipx/venvs/twine=, =/bisos/pipx/bin/twine= | pipx         |
+| Upload login                               | =/etc/pypiserver/htpasswd=               | root:pypiserver 640  |
+| Index flags                                | =/etc/default/pypiserver= (=ARGS==)        | root:pypiserver 640  |
+| Browser settings                           | =/etc/default/pypi-browser= (=PYPI_BROWSER_*=) | root:pypiserver 640 |
+| The index (uploaded distributions)         | =/var/lib/pypiserver/packages=           | pypiserver           |
+| pypi-browser's cache                       | =/var/lib/pypiserver/browser-cache=      | pypiserver           |
+
+No fallback: a package that is not in this index is not redirected to pypi.org (=--disable-fallback=); use
+=--extra-index-url= to combine it with PyPI. =pypiserverAdmin.cs -i driftCheck= reports the config files, the
+units, and every pinned package of both venvs against its pin. The isolated venv's hashed set covers amd64
+with Python 3.13 (two of its wheels are binary); the sbom refuses another architecture.
+
+* The 3 sboms: Server, Usage, and the CBS's
+
+| sbom                         | Installs                                                        | Pulls in      |
+|------------------------------+-----------------------------------------------------------------+---------------|
+| =pypiserver-sbom.pcs=          | the account, pypiserver in =asc=, pypi-browser isolated, config   | nothing       |
+| =pypiserverUsage-sbom.pcs=     | twine, through pipx                                             | nothing       |
+| =pypiserverCbs-sbom.pcs=       | nothing of its own                                              | the two above |
+
+The Python packages are installed by func-bearing pseudo-packages, not through bisos.sbom's =pipPkgsList= /
+=pipxPkgsList=: those ignore versions and skip anything already installed, so a pin would never be applied
+or bumped (recorded in AI-Outputs.org).
+
+* The 2 systemd Units
+
+| Unit                    | Runs                                                       | Ordering                                       |
+|-------------------------+------------------------------------------------------------+------------------------------------------------|
+| =pypiserver-sysd.pcs=     | =asc/bin/pypi-server $ARGS= (waitress, chosen by =auto=)       | =After=network.target=                           |
+| =pypi-browser-sysd.pcs=   | =isolated/pypiBrowser/bin/uvicorn ... pypi_browser.app:app=  | =After=pypiserver.service=, =Wants=pypiserver.service= |
+
+Both run as =User=pypiserver=. Logs go to journald.
+
+* Listeners and Ports
+
+Ports are assigned in =bisos.banna= (=tcpPorts.py=), never hardcoded. Both bind loopback only.
+
+| Listener                       | Address                 | banna name  |
+|--------------------------------+-------------------------+-------------|
+| pypiserver (waitress)          | =127.0.0.1:24013=         | =pypiserver=  |
+| pypi-browser (uvicorn)         | =127.0.0.1:24014=         | =pypiBrowser= |
+| Both, via nginx                | =http://pypiserver.here= | --- (127.0.22.116) |
+
+* Installation
+
+The sources for the bisos.pypiserver pip package are maintained at:\\
+https://github.com/bisos-pip/pypiserver
+
+The bisos.pypiserver pip package is available at PYPI as\\
+https://pypi.org/project/bisos.pypiserver
+
+You can install bisos.pypiserver with pip or pipx.
+
+** Installation With pip
+
+If you need access to bisos.pypiserver as a python module, install it with pip:
+
+#+begin_src bash
+pip install bisos.pypiserver
+#+end_src
+
+** Installation With pipx
+
+If you only need access to bisos.pypiserver on the command line, install it with pipx:
+
+#+begin_src bash
+pipx install bisos.pypiserver
+#+end_src
+
+The following commands are made available:
+
+- =pypiserverAdmin.cs= --- day-to-day admin CS for this host's =pypiserver.here= installation.
+- =quickPypiserver.cs= --- direct-command cheat sheet: pip, twine, curl, the two units.
+- =pypiserver-assemble.cs= --- assembly step: =pypiserver.here= dns entry and nginx vhost.
+- =cbmProc-pypiserver.spcs= --- planted CBM pointer that materializes the CBS at this host.
+
+The planted =.pcs= files (=pypiserver-cbs.pcs=, the three sboms, the two =-sysd.pcs=, =pypiserver-here-dns.pcs=,
+=pypiserver-wvd.pcs=) are invoked directly from =py3/bin/=.
+
+* Usage
+
+** Materialization
+
+#+begin_src bash
+pypiserver-sbom.pcs -i sbom_fullUpdate          # install the server only
+pypiserverUsage-sbom.pcs -i sbom_fullUpdate     # install the usage side only (twine)
+pypiserver-cbs.pcs -i cbs_materialize           # both sboms + units + assemble
+cbmProc-pypiserver.spcs -i cbm_enable           # at the planted CBM leaf, then:
+cbmProc-pypiserver.spcs -i cbm_materialize
+#+end_src
+
+The =asc= venv must exist first (=pyVenv-asc-sbom.pcs -i sbom_fullUpdate=); the sbom says so if it does not.
+
+** Using the Index: pip and twine
+
+pip ignores an index on plain HTTP, other than localhost, unless it is named with =--trusted-host=
+(=PIP_TRUSTED_HOST=): every =.here= is HTTP.
+
+#+begin_src bash
+pip install --extra-index-url http://pypiserver.here/simple/ --trusted-host pypiserver.here <package>   # with PyPI
+pip install --index-url http://pypiserver.here/simple/ --trusted-host pypiserver.here <package>         # this index only
+/bisos/pipx/bin/twine upload --repository-url http://pypiserver.here/ -u admin -p pypiserver dist/*
+#+end_src
+
+Browse the index at =http://pypiserver.here/=; a package's page lists its files, and opening one shows what
+is inside it.
+
+** Day-to-Day Admin: =pypiserverAdmin.cs=
+
+#+begin_src bash
+pypiserverAdmin.cs -i hostInfo        # fqdn, listeners, login, venvs, config/data paths
+pypiserverAdmin.cs -i servicesInfo    # links for operating the 2 systemd units
+pypiserverAdmin.cs -i indexInfo       # pip, twine and curl against the index
+pypiserverAdmin.cs -i driftCheck      # read-only: config, units and both venvs' pins vs pypiserverInfo
+pypiserverAdmin.cs -i fullUpdate      # the three info Cmnds together
+#+end_src
+
+** Direct Command Cheat Sheet: =quickPypiserver.cs=
+
+#+begin_src bash
+quickPypiserver.cs
+#+end_src
+
+* Key Files
+
+- =py3/bisos/pypiserver/pypiserverInfo.py= --- the single source of facts: the venvs and pins (the isolated venv's hashed set and why it is isolated), paths, ports, the login, the generators of the two EnvironmentFiles and the units' identity lines, the install scripts (the =asc= guard, the isolated venv, twine, htpasswd), and the drift helpers.
+- =py3/bin/pypiserver-cbs.pcs= --- CBS declaring the bundle (sbom + 2 sysd units + assemble).
+- =py3/bin/cbmProc-pypiserver.spcs= --- planted CBM pointer leaf that materializes the CBS.
+- =py3/bin/pypiserver-sbom.pcs=, =pypiserverUsage-sbom.pcs=, =pypiserverCbs-sbom.pcs= --- the server, usage and CBS sboms via [[https://github.com/bisos-pip/sbom][bisos.sbom]].
+- =py3/bin/pypiserver-sysd.pcs=, =py3/bin/pypi-browser-sysd.pcs= --- the two units.
+- =py3/bin/pypiserver-assemble.cs= --- assembly step (dns + vhost).
+- =py3/bin/pypiserver-here-dns.pcs= --- =.here= fake-domain DNS registration for =pypiserver.here=.
+- =py3/bin/pypiserver-wvd.pcs= --- nginx vhost for =pypiserver.here=: the routing between the two programs.
+- =py3/bin/pypiserverAdmin.cs=, =py3/bin/quickPypiserver.cs= --- admin CS and cheat sheet.
+- =py3/tests/verify.sh= --- smoke test of every command and of =pypiserverInfo='s invariants.
+- =py3/setup.py=, =py3/pypiProc.sh= --- PyPI packaging (setup.py is dblock-driven; do not hand-edit).
+
+* Part of BISOS — ByStar Internet Services Operating System
+
+Layered on top of Debian, *BISOS* (By* Internet Services Operating System)
+is a unified and universal framework for developing both internet services and
+software-service continuums that use internet services. See
+[[https://github.com/bxGenesis/start][Bootstrapping ByStar, BISOS and Blee]]
+for information about getting started with BISOS.
+
+*BISOS* is a foundation for *The Libre-Halaal ByStar Digital Ecosystem* which
+is described as a cure for losses of autonomy and privacy in a book titled:
+[[https://github.com/bxplpc/120033][Nature of Polyexistentials]]
+
+/bisos.pypiserver/ is part of BISOS. It is a standalone package that can
+be used independently of the full BISOS environment.
+
+* Documentation and Blee-Panels
+
+bisos.pypiserver is part of the ByStar Digital Ecosystem
+[[http://www.by-star.net]].
+
+This module's primary documentation is in the form of Blee-Panels.
+Blee-Panels are in the =./py3/panels= directory. From within Blee and
+BISOS these panels are accessible under the Blee "Panels" menu.
+
+See [[file:./py3/panels/bisos.pypiserver/_nodeBase_/fullUsagePanel-en.org]]
+for a starting point.
+
+/bisos.pypiserver/ is best developed with [[https://github.com/bx-blee][Blee]], the /By* BISOS
+Libre-Halaal Emacs Environment/ --- a layer on top of Emacs and BISOS
+which creates a comprehensive integrated usage and development
+environment.
+
+* Support
+
+For support, criticism, comments and questions; please contact the
+author/maintainer\\
+[[http://mohsen.1.banan.byname.net][Mohsen Banan]] at:
+[[http://mohsen.1.banan.byname.net/contact]]
+
+* Planned Improvements
+
+** TODO The "secure it" layer: a real upload password, HTTPS (which also removes the need for --trusted-host), listening beyond loopback
+** TODO Move pypi-browser back into =asc= once a release works with Starlette 1.x (upstream PR #15)
+** TODO Architectures other than amd64 for the isolated venv's hashed set
+** TODO Plant the CBM leaf in bro_rawBisos (=sys/cbm/collective/hereWeb/pypiserver/=)
+
+
+# Local Variables:
+# eval: (setq-local toc-org-max-depth 4)
+# End:
